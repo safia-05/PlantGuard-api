@@ -7,14 +7,14 @@ from torchvision import transforms, models
 from PIL import Image
 import io
 
-# ── App setup ──────────────────────────────────────────────────────────────────
+#Setup app
 app = FastAPI(
     title="PlantGuard",
-    description="Upload a plant image and get a Toxic / Non-Toxic prediction.",
+    description="Upload a plant image to identify toxic/non.",
     version="1.0.0",
 )
 
-# Allow Flutter (or any client) to call this API
+#allow all clients to use api
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -22,8 +22,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── Constants (extracted from the training notebook) ───────────────────────────
-IMG_SIZE = 260          # size used during training
+#Constants
+IMG_SIZE = 260         
 LOW_CONF_THRESHOLD  = 0.60
 HIGH_CONF_THRESHOLD = 0.80
 
@@ -44,25 +44,21 @@ CLASS_INFO = {
     },
 }
 
-# ── Model path ─────────────────────────────────────────────────────────────────
-# Put whichever .pth file you want to use here.
-# Use "best_efficientnet_b2.pth"  for the best checkpoint
-# Use "efficientnet_b2_final.pth" for the final fine-tuned version
+#model path
 MODEL_PATH = "best_efficientnet_b2.pth"
 
-# ── Build the exact same architecture the AI team used ─────────────────────────
+#build architecture
 def build_model():
     model = models.efficientnet_b2(weights=None)
     num_features = model.classifier[1].in_features  # 1408 for EfficientNet-B2
     
-    # Match the architecture used during training
     model.classifier = nn.Sequential(
         nn.Dropout(p=0.4),          # dropout rate may vary; 0.4 is common
         nn.Linear(num_features, 2)  # direct to 2 classes
     )
     return model
 
-# ── Load model once at startup ─────────────────────────────────────────────────
+#load model at startup 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model  = build_model()
 model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
@@ -70,7 +66,7 @@ model.to(device)
 model.eval()
 print(f"Model loaded from '{MODEL_PATH}' on {device}")
 
-# ── Preprocessing (eval transform from the notebook) ──────────────────────────
+#preprocessing info mn el notebook
 transform = transforms.Compose([
     transforms.Resize((IMG_SIZE, IMG_SIZE)),
     transforms.ToTensor(),
@@ -80,7 +76,7 @@ transform = transforms.Compose([
     ),
 ])
 
-# ── Routes ─────────────────────────────────────────────────────────────────────
+#routes
 @app.get("/")
 def root():
     return {"message": "PlantGuard is running"}
@@ -99,7 +95,7 @@ class PlantResponse(BaseModel):
 @app.post("/identify")
 async def identify_plant(file: UploadFile = File(...)):
     """
-    Upload a plant image (JPG / PNG) and receive a prediction.
+    Upload a plant image (JPG / PNG) and receive a prediction. 
 
     Returns:
         - plant_status : "Non-Toxic" | "Toxic" | "Unknown"
@@ -109,14 +105,14 @@ async def identify_plant(file: UploadFile = File(...)):
         - nontoxic_probability: probability the plant is non-toxic
         - advice       : short safety advice string
     """
-    # ── Validate file type ────────────────────────────────────────────────────
-    if file.content_type not in ("image/jpeg", "image/png", "image/jpg"):
+    #make sure the user has uploaded either a png or jpg image 
+    if file.content_type not in ("image/png", "image/jpg"):
         raise HTTPException(
             status_code=400,
             detail="Only JPG and PNG images are supported.",
         )
 
-    # ── Read & preprocess image ───────────────────────────────────────────────
+    #read and preprocess the image uploaded
     try:
         image_bytes = await file.read()
         image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
@@ -125,16 +121,16 @@ async def identify_plant(file: UploadFile = File(...)):
 
     tensor = transform(image).unsqueeze(0).to(device)  # shape: [1, 3, 260, 260]
 
-    # ── Run inference ─────────────────────────────────────────────────────────
+    #run inference
     with torch.no_grad():
         outputs = model(tensor)                        # raw logits
         probs   = F.softmax(outputs, dim=1)[0]         # probabilities for class 0 & 1
 
-    prob_nontoxic = probs[0].item()
-    prob_toxic    = probs[1].item()
-    confidence    = max(prob_nontoxic, prob_toxic)
+    prob_nontoxic = probs[1].item() 
+    prob_toxic    = probs[0].item()
+    confidence    = max(prob_nontoxic, prob_toxic) #take the max if the bigger number is toxic then the plant is toxic so that would be the confidence
 
-    # ── Apply confidence thresholds (mirrors the notebook logic) ─────────────
+    #apply confidence thresholds mn notebook 
     if confidence < LOW_CONF_THRESHOLD:
         plant_status = "Unknown"
         is_poisonous = None
@@ -148,8 +144,11 @@ async def identify_plant(file: UploadFile = File(...)):
     return {
         "plant_status"         : plant_status,
         "is_poisonous"         : is_poisonous,
-        "confidence"           : round(confidence, 4),
-        "toxic_probability"    : round(prob_toxic, 4),
-        "nontoxic_probability" : round(prob_nontoxic, 4),
+        #"confidence": round(confidence, 4),
+        "confidence_percent": f"{confidence * 100:.1f}%",
+        #"toxic_probability"    : round(prob_toxic, 4), it shows the number like 0.9999
+        "toxic_percent": f"{prob_toxic*100:.1f}%",
+        #"nontoxic_probability" : round(prob_nontoxic, 4),it shows the number like 0.9999
+         "Non-toxic_percent": f"{prob_nontoxic*100:.1f}%",
         "advice"               : advice,
     }
