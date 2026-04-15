@@ -94,61 +94,41 @@ class PlantResponse(BaseModel):
 
 @app.post("/identify")
 async def identify_plant(file: UploadFile = File(...)):
-    """
-    Upload a plant image (JPG / PNG) and receive a prediction. 
-
-    Returns:
-        - plant_status : "Non-Toxic" | "Toxic" | "Unknown"
-        - is_poisonous : true / false / null (null = unknown)
-        - confidence   : 0.0 – 1.0
-        - toxic_probability   : probability the plant is toxic
-        - nontoxic_probability: probability the plant is non-toxic
-        - advice       : short safety advice string
-    """
-    #make sure the user has uploaded either a png or jpg image 
-    if file.content_type not in ("image/png", "image/jpg"):
-        raise HTTPException(
-            status_code=400,
-            detail="Only JPG and PNG images are supported.",
-        )
-
-    #read and preprocess the image uploaded
+    # 1. Read and validate image
     try:
         image_bytes = await file.read()
+        if len(image_bytes) > 10 * 1024 * 1024:
+            raise HTTPException(400, "Image too large (max 10 MB).")
         image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-    except Exception:
-        raise HTTPException(status_code=400, detail="Could not read the image file.")
+        # optional: add size/ratio checks here if you want
+    except Exception as e:
+        raise HTTPException(400, f"Invalid image file: {str(e)}")
 
-    tensor = transform(image).unsqueeze(0).to(device)  # shape: [1, 3, 260, 260]
+    tensor = transform(image).unsqueeze(0).to(device)
 
-    #run inference
     with torch.no_grad():
-        outputs = model(tensor)                        # raw logits
-        probs   = F.softmax(outputs, dim=1)[0]         # probabilities for class 0 & 1
+        outputs = model(tensor)
+        probs = F.softmax(outputs, dim=1)[0]
 
-    prob_nontoxic = probs[1].item() 
-    prob_toxic    = probs[0].item()
-    confidence    = max(prob_nontoxic, prob_toxic) #take the max if the bigger number is toxic then the plant is toxic so that would be the confidence
+    prob_nontoxic = probs[1].item()
+    prob_toxic = probs[0].item()
+    confidence = max(prob_nontoxic, prob_toxic)
 
-    #apply confidence thresholds mn notebook 
     if confidence < LOW_CONF_THRESHOLD:
         plant_status = "Unknown"
         is_poisonous = None
     else:
         predicted_idx = probs.argmax().item()
-        plant_status  = CLASS_NAMES[predicted_idx]
-        is_poisonous  = (plant_status == "Toxic")
+        plant_status = CLASS_NAMES[predicted_idx]
+        is_poisonous = (plant_status == "Toxic")
 
     advice = CLASS_INFO[plant_status]["advice"]
 
     return {
-        "plant_status"         : plant_status,
-        "is_poisonous"         : is_poisonous,
-        #"confidence": round(confidence, 4),
+        "plant_status": plant_status,
+        "is_poisonous": is_poisonous,
         "confidence_percent": f"{confidence * 100:.1f}%",
-        #"toxic_probability"    : round(prob_toxic, 4), it shows the number like 0.9999
-        "toxic_percent": f"{prob_toxic*100:.1f}%",
-        #"nontoxic_probability" : round(prob_nontoxic, 4),it shows the number like 0.9999
-         "Non-toxic_percent": f"{prob_nontoxic*100:.1f}%",
-        "advice"               : advice,
+        "toxic_percent": f"{prob_toxic * 100:.1f}%",
+        "Non-toxic_percent": f"{prob_nontoxic * 100:.1f}%",
+        "advice": advice,
     }
